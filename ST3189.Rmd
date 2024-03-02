@@ -1,0 +1,1171 @@
+---
+title: "ST3189_coursework"
+author: ""
+output: html_document
+date: "2023-10-12"
+---
+
+Coursework task order:
+1. Regression
+2. Unsupervised Learning
+3. Classification
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+1. REGRESSION
+=====================================================
+
+Dataset: Lasha Gochiashvili. (2023). <i>Life Expectancy (WHO) Fixed</i> [Data set]. Kaggle. https://doi.org/10.34740/KAGGLE/DS/3065197
+
+Prepare 'Life' dataset
+```{r }
+
+# Import data and remove NAs
+life.original <- read.csv('Life-Expectancy-Data-Updated.csv', stringsAsFactors = TRUE)
+life.original <- na.omit(life.original)
+
+# Load packages
+library("tidyverse")
+library("caret")
+library("datarium")
+
+attach(life.original)
+
+# Remove Country, Economy_status_Developed and mortality-related variables variables
+life <- subset(life.original, select=-c(Country, Infant_deaths, Adult_mortality, Economy_status_Developed, Life_expectancy))
+
+# Separate data into training and test sets (80%/20%)
+set.seed(1234) 
+training.samples <- life$Under_five_deaths %>%
+  createDataPartition(p = 0.8, list = FALSE)
+train.life  <- life[training.samples, ]
+test.life <- life[-training.samples, ]
+
+```
+
+Prepare and inspect immunization data - create 'Immune' dataset.
+```{r }
+
+# Create IMMUNE datasets
+# Create full, train and test datasets with 'Under_five_deaths' and the four immunization parameters
+immune <- life[,c("Under_five_deaths", "Measles", "Polio", "Hepatitis_B", "Diphtheria")]
+train.immune <- train.life[,c("Under_five_deaths", "Measles", "Polio", "Hepatitis_B", "Diphtheria")]
+test.immune <- test.life[,c("Under_five_deaths", "Measles", "Polio", "Hepatitis_B", "Diphtheria")]
+
+# Inspect immune data
+# Check numerical and visual correlations
+pairs(immune)
+cor(immune)
+
+# Plot Under_five_deaths vs Polio
+library(ggplot2)
+par(mfrow = c(1, 1))
+ggplot(data.frame(x=immune$Polio,y=immune$Under_five_deaths), aes(x=x, y=y)) +
+  geom_point(aes(color=x)) +  # Color points by x values
+  geom_smooth(method=lm, se=FALSE, color="red") +  # Add regression line
+  labs(title="Scatter Plot: Polio vs Under Five Deaths", x="Polio Immunization (%)", y="Under five deaths")
+
+```
+
+Multiple Linear Regression of 'Under_five_deaths' on 'Immune' data
+```{r }
+
+# train the MLR model
+lm.immune <- lm(Under_five_deaths ~ . , data = train.immune)
+# Summarize the model
+summary(lm.immune)
+# Make predictions
+lm.pred.immune <- lm.immune %>% predict(test.immune) 
+
+# Model performance
+# (a) Prediction error, RMSE
+RMSE(lm.pred.immune, test.immune$Under_five_deaths)
+# 28.55108
+# (b) R-square
+R2(lm.pred.immune, test.immune$Under_five_deaths)
+# 0.6035946
+
+# Plot residuals vs fitted values
+imm.residuals <- resid(lm.immune)
+plot(predict(lm.immune), imm.residuals, 
+     xlab = "Fitted values", ylab = "Residuals",
+     main = "Residuals vs Fitted Values")
+abline(h = 0, col = "red")  # Adding a horizontal line at y = 0
+# Evidence of heteroskedasticity
+# Plot residuals vs an independent variable: Hepatitis_B
+plot(train.immune$Hepatitis_B, imm.residuals, 
+     xlab = "Hepatitis B", ylab = "Residuals",
+     main = "Residuals vs Hepatitis B")
+
+```
+
+Multiple Linear Regression of 'Under_five_deaths' on full 'Life' dataset
+```{r }
+
+# Train the MLR model
+lm.life <- glm(Under_five_deaths ~ . , data = train.life)
+# Summarize the model
+summary(lm.life)
+# Make predictions
+lm.pred.life <- lm.life %>% predict(test.life) 
+
+# Model performance
+# (a) Prediction error, RMSE
+RMSE(lm.pred.life, test.life$Under_five_deaths)
+# 17.46202
+# (b) R-square
+R2(lm.pred.life, test.life$Under_five_deaths)
+# 0.8518673
+
+# Plot MLR residuals
+life.residuals <- resid(lm.life)
+plot(predict(lm.life), life.residuals, 
+     xlab = "Fitted values", ylab = "Residuals",
+     main = "Residuals vs Fitted Values")
+abline(h = 0, col = "red")  # Adding a horizontal line at y = 0
+
+# Alternative residuals plot, including 5% and 95% quantiles
+library(stringr)
+library(ggplot2)
+# Residuals vs Fitted values from Multiple Linear Regression of 'Under_five_deaths' on 'Life' dataset
+ggplot(data = train.life, aes(x = fitted(lm.life), y = residuals(lm.life))) + 
+  geom_point(size = 0.7) +  # Plotting residuals
+  geom_smooth(color = "red", se = FALSE) +  # Smooth fit to the residuals
+  geom_quantile(quantiles = 0.05, color = "blue") +  # 5% quantile
+  geom_quantile(quantiles = 0.95, color = "blue") +  # 95% quantile
+  labs(x="Fitted Values", y="Residuals") +
+  theme_minimal()
+
+# Compare with MLR on Immune data residuals
+# Residuals vs Fitted values from Multiple Linear Regression of 'Under_five_deaths' on 'Immune' dataset
+ggplot(data = train.life, aes(x = fitted(lm.immune), y = residuals(lm.immune))) + 
+  geom_point(size = 0.7) +  # Plotting residuals
+  geom_smooth(color = "red", se = FALSE) +  # Smooth fit to the residuals
+  geom_quantile(quantiles = 0.05, color = "blue") +  # 5% quantile
+  geom_quantile(quantiles = 0.95, color = "blue") +  # 95% quantile
+  labs(x="Fitted Values", y="Residuals") +
+  theme_minimal()
+
+```
+
+MLR with k-fold cross validation (k=10) on 'Life'
+```{r }
+
+# specify cross-validation method
+cv.train <- trainControl(method = "cv", number = 10)
+set.seed(1234)
+# fit a linear regression model and use k-fold CV to evaluate performance
+cv.lm.life <- train(Under_five_deaths ~. , data = life, method = "lm", trControl = cv.train)
+# Model summary
+print(cv.lm.life)
+# RMSE 17.57566
+# R2 0.8452895
+
+```
+
+Principal Component Regression of 'Under_five_deaths' on 'Life'
+```{r }
+
+# Test 22 different values of ncomp, specified using tuneLength
+# Build PCR model on training set
+set.seed(123)
+pcr.life <- train(Under_five_deaths ~., data = train.life, method = "pcr", scale = TRUE,
+  trControl = trainControl("cv", number = 10),
+  tuneLength = 22)
+
+# Plot model RMSE vs different values of ncomp
+plot(pcr.life)
+# Print the best tuning parameter ncomp that minimizes the CV error RMSE
+pcr.life$bestTune
+# Selecting 20 principal components gives the smallest RMSE
+
+# Summarize the final model
+summary(pcr.life$finalModel)
+# Make predictions
+pcr.pred <- pcr.life %>% predict(test.life)
+
+# Model performance: RMSE and R2
+data.frame(
+  RMSE = caret::RMSE(pcr.pred, test.life$Under_five_deaths),
+  Rsquare = caret::R2(pcr.pred, test.life$Under_five_deaths))
+# RMSE 17.48197
+# R2 0.8515318
+
+```
+
+Subset Selection of 'Life' Regression
+```{r }
+# Load packages
+set.seed(1234)
+library(leaps)
+library(glmnet)
+
+# Define a function for subset selection
+predict.regsubsets = function(object, newdata, id, ...) {
+  form = as.formula(object$call[[2]])
+  mat = model.matrix(form, newdata)
+  coefi = coef(object, id = id)
+  mat[, names(coefi)] %*% coefi}
+
+# Subset selection using k-fold CV
+k = 10
+p = 22
+folds = sample(rep(1:k, length = nrow(life)))
+cv.errors = matrix(NA, k, p)
+for (i in 1:k) {
+  best.fit = regsubsets(Under_five_deaths ~ ., data = life[folds != i, ], nvmax = p)
+  for (j in 1:p) {
+    pred = predict(best.fit, life[folds == i, ], id = j)
+    cv.errors[i, j] = mean((life$Under_five_deaths[folds == i] - pred)^2)}}
+rmse.cv = sqrt(apply(cv.errors, 2, mean))
+
+# Plot CV errors
+plot(rmse.cv, pch = 19, type = "b")
+best.fit = regsubsets(Under_five_deaths ~ ., data = life, nvmax = p)
+summary(best.fit)
+which.min(rmse.cv)
+# A subset of 20 components gives the smallest RMSE
+# View smallest RMSE
+rmse.cv[which.min(rmse.cv)]
+# RMSE 17.60986
+
+# plot subsets with BIC values
+plot(best.fit)
+
+# Compute R2
+best_model_summary <- summary(best.fit)
+best_r2 <- best_model_summary$rsq[which.min(rmse.cv)]
+best_r2
+# R2 0.8460473
+```
+
+Decision Tree for 'Life'
+```{r }
+# Load packages
+library("tidyverse")
+library("caret")
+library("rpart")
+par(mfrow = c(1, 1))
+set.seed(1234)
+
+# train decision tree model
+tree.life <- train(Under_five_deaths ~., data = train.life, method = "rpart",
+  trControl = trainControl("cv", number = 10),
+  tuneLength = 10)
+# Plot model error vs different values of complexity parameter
+plot(tree.life)
+# Print best complexity parameter that minimizes the model RMSE
+tree.life$bestTune
+
+# Plot the final tree model
+par(xpd = NA) # Avoid clipping the text
+plot(tree.life$finalModel)
+text(tree.life$finalModel, digits = 3)
+
+# Decision rules in the model
+tree.life$finalModel
+# Make predictions on the test data
+tree.pred <- tree.life %>% predict(test.life)
+head(tree.pred)
+
+# Compute the prediction error RMSE
+RMSE(tree.pred, test.life$Under_five_deaths)
+# 17.96195
+```
+
+Random Forest for 'Life'
+```{r }
+# Train random forest model
+set.seed(1234)
+rf.life <- train(Under_five_deaths ~., data = train.life, method = "rf",
+  trControl = trainControl("cv", number = 10))
+# Best tuning parameter mtry
+rf.life$bestTune
+
+# Make predictions on the test data
+rf.pred <- rf.life %>% predict(test.life)
+head(rf.pred)
+
+# Compute the average prediction error RMSE
+RMSE(rf.pred, test.life$Under_five_deaths)
+# 5.908052
+# Print variable Importance
+varImp(rf.life)
+
+```
+
+Boosting on 'Life' - part 1
+```{r echo=TRUE, results='hide'}
+# Load packages
+library("tidyverse")
+library("caret")
+library("xgboost")
+
+# Train boosting model
+set.seed(1234)
+boost.life <- train(Under_five_deaths ~., data = train.life, method = "xgbTree",
+                    trControl = trainControl("cv", number = 10))
+```
+
+Boosting on 'Life' - part 2
+```{r }
+# Best tuning parameter mtry
+boost.life$bestTune
+
+# Make predictions on the test data
+boost.life.pred <- boost.life %>% predict(test.life)
+head(boost.life.pred)
+
+# Print variable importance
+varImp(boost.life)
+
+# Compute the average prediction error RMSE
+RMSE(boost.life.pred, test.life$Under_five_deaths)
+# RMSE 7.072787
+```
+
+Back to 'Immune' dataset
+K-fold cross validation (k=10) of 'Immune' MLR on 'Under_five_deaths'
+```{r , include=TRUE}
+# load package
+library(caret)
+set.seed(1234)
+
+# fit a linear regression model and use k-fold CV to evaluate performance
+cv.lm.immune <- train(Under_five_deaths ~. , data = immune, method = "lm", trControl = cv.train)
+
+# Print summary of k-fold CV               
+print(cv.lm.immune)
+# RMSE 28.72227
+# R2 0.5854754
+```
+
+Principal Component Regression of Under_five_deaths on 'Immune'
+```{r }
+# Build PCR model on training set
+set.seed(123)
+pcr.immune <- train(Under_five_deaths ~., data = train.immune, method = "pcr", scale = TRUE,
+                  trControl = trainControl("cv", number = 10))
+
+# Plot model RMSE vs different values of components
+plot(pcr.immune)
+# Print the best tuning parameter ncomp that minimizes the cross-validation error, RMSE
+pcr.immune$bestTune
+# 3 principal components minimizes the RMSE
+
+# Summarize the final model
+summary(pcr.immune$finalModel)
+# Make predictions
+pcr.im.pred <- pcr.immune %>% predict(test.immune)
+
+# Model performance: RMSE and R2
+data.frame(
+  RMSE = caret::RMSE(pcr.im.pred, test.immune$Under_five_deaths),
+  Rsquare = caret::R2(pcr.im.pred, test.immune$Under_five_deaths))
+# RMSE 28.54361
+# R2 0.6037642
+```
+
+Subset Selection of 'Immune' Regression
+```{r }
+# Load packages
+set.seed(1234)
+library(leaps)
+library(glmnet)
+
+# Define a function for subset selection
+predict.regsubsets = function(object, newdata, id, ...) {
+  form = as.formula(object$call[[2]])
+  mat = model.matrix(form, newdata)
+  coefi = coef(object, id = id)
+  mat[, names(coefi)] %*% coefi}
+
+# Subset selection using k-fold CV
+k = 10
+p2 = 4
+folds2 = sample(rep(1:k, length = nrow(immune)))
+cv.errors2 = matrix(NA, k, p2)
+for (i in 1:k) {
+  best.fit2 = regsubsets(Under_five_deaths ~ ., data = immune[folds2 != i, ], nvmax = p2)
+  for (j in 1:p2) {
+    pred2 = predict(best.fit2, immune[folds2 == i, ], id = j)
+    cv.errors2[i, j] = mean((immune$Under_five_deaths[folds2 == i] - pred2)^2)}}
+rmse.cv2 = sqrt(apply(cv.errors2, 2, mean))
+
+# Plot CV errors
+plot(rmse.cv2, pch = 19, type = "b")
+best.fit2 = regsubsets(Under_five_deaths ~ ., data = immune, nvmax = p2)
+
+# Summarize subsets 
+summary(best.fit2)
+which.min(rmse.cv2)
+# All 4 components give the smallest RMSE - so no subset selection occurs
+
+# View RMSE
+rmse.cv2[which.min(rmse.cv2)]
+# 28.77077
+
+# Plot of subsets by BIC values
+plot(best.fit2)
+
+# Compute R2
+best_model_summary2 <- summary(best.fit2)
+best_r22 <- best_model_summary2$rsq[which.min(rmse.cv2)]
+best_r22
+# 0.5852288
+```
+
+Decision Tree for 'Immune'
+```{r}
+# Load packages
+library("tidyverse")
+library("caret")
+library("rpart")
+
+# Train decision tree model
+set.seed(1234)
+tree.immune <- train(Under_five_deaths ~., data = train.immune, method = "rpart",
+                   trControl = trainControl("cv", number = 10),
+                   tuneLength = 10)
+# Plot model error vs different values of complexity parameter
+plot(tree.immune)
+# Print the cp that minimizes the RMSE
+tree.immune$bestTune
+
+# Plot the final tree model
+par(xpd = NA) # Avoid clipping the text
+plot(tree.immune$finalModel)
+text(tree.immune$finalModel, digits = 3)
+
+# Decision rules in the model
+tree.immune$finalModel
+# Make predictions on the test data
+immune.tree.pred <- tree.immune %>% predict(test.immune)
+head(immune.tree.pred)
+
+# Compute prediction error RMSE
+RMSE(immune.tree.pred, test.immune$Under_five_deaths)
+# 26.68868
+```
+
+Random Forest of 'Immune'
+```{r}
+# Train random forest model
+set.seed(1234)
+rf.immune <- train(Under_five_deaths ~., data = train.immune, method = "rf",
+                 trControl = trainControl("cv", number = 10))
+# Best tuning parameter mtry
+rf.immune$bestTune
+
+# Make predictions on the test data
+rf.im.pred <- rf.immune %>% predict(test.immune)
+head(rf.im.pred)
+
+# Compute the average prediction error RMSE
+RMSE(rf.im.pred, test.immune$Under_five_deaths)
+# 21.04738
+
+# Print variable importance
+varImp(rf.immune)
+```
+
+Boosting on 'Immune' - part 1
+```{r echo=TRUE, results='hide'}
+# Load packages
+library("tidyverse")
+library("caret")
+library("xgboost")
+
+# Train boosting model
+set.seed(1234)
+boost.immune <- train(Under_five_deaths ~., data = train.immune, method = "xgbTree",
+                    trControl = trainControl("cv", number = 10))
+```
+Boosting on 'Immune' - part 2
+```{r }
+# Best tuning parameter mtry
+boost.immune$bestTune
+# Make predictions on the test data
+boost.immune.pred <- boost.immune %>% predict(test.immune)
+head(boost.immune.pred)
+
+# Print variable importance
+varImp(boost.immune)
+
+# Compute the average prediction error RMSE
+RMSE(boost.immune.pred, test.immune$Under_five_deaths)
+# 21.56606
+```
+
+Neural Network of 'Immune'
+```{r }
+# Load packages
+library(tidyverse) 
+library(neuralnet)
+
+# Data pre-processing: normalization
+maxs <- apply(immune, 2, max) 
+mins <- apply(immune, 2, min)
+scaled <- as.data.frame(scale(immune, center = mins, scale = maxs - mins))
+# Split data into train and test sets
+train_ <- scaled[training.samples,]
+test_ <- scaled[-training.samples,]
+n <- names(train_)
+f <- as.formula(paste("Under_five_deaths ~", paste(n[!n %in% "Under_five_deaths"], collapse = " + ")))
+
+# train neural network: 1 hidden layer with 3 neurons
+set.seed(1234)
+nn <- neuralnet(f,data=train_,hidden=c(3),linear.output=T)
+# Plot the neural network model
+plot(nn)
+
+# Make predictions on the test data and calculate MSE
+pr.nn <- compute(nn,test_[,2:5])
+pr.nn_ <- pr.nn$net.result*(max(immune$Under_five_deaths)-min(immune$Under_five_deaths))+min(immune$Under_five_deaths) 
+test.r <- (test_$Under_five_deaths)*(max(immune$Under_five_deaths)-min(immune$Under_five_deaths))+min(immune$Under_five_deaths)
+MSE.nn <- sum((test.r - pr.nn_)^2)/nrow(test_)
+
+# Calculate RMSE
+sqrt(MSE.nn)
+# 26.93624
+```
+
+Model Comparison
+```{r}
+# Create bar plot of all RMSEs for model and dataset comparison
+
+# Create model labels
+models.all <- c("MLR", "MLR with k-fold CV", "PCR", "Subset Selection", "Decision Tree", "Random Forest", "Boosting", "Neural Network", "MLR", "MLR with k-fold CV", "PCR", "Subset Selection", "Decision Tree", "Random Forest", "Boosting")
+
+# RMSE values
+rmse_values <- c(28.55108, 28.72227, 28.54361, 28.77077, 26.68868, 21.04738, 21.56606, 26.93624, 17.46202, 17.57566, 17.48197, 17.60986, 17.96195, 5.908052, 7.072787)
+
+# Set colors for bars
+bar_colors <- c(rep("orange", 8), rep("violet", 7))
+
+# Plot the barplot
+par(mfrow = c(1, 1))
+barplot(rmse_values, names.arg=models.all, main="RMSE of Models", 
+        ylab="RMSE", col=bar_colors, border="black", las=2, cex.names=0.75)
+# Adding a legend
+legend("topright", legend=c("Immune", "Life"), fill=c("orange", "violet"))
+
+# Check the range of the response variable for interpretation of RMSEs
+max(Under_five_deaths)
+min(Under_five_deaths)
+# range
+224.9-2.3
+# 222.6
+```
+
+2. UNSUPERVISED LEARNING
+=====================================================
+
+Dataset: Lasha Gochiashvili. (2023). <i>Life Expectancy (WHO) Fixed</i> [Data set]. Kaggle. https://doi.org/10.34740/KAGGLE/DS/3065197
+
+Load and prepare data
+```{r }
+# Load data
+life.original <- read.csv('Life-Expectancy-Data-Updated.csv', stringsAsFactors = FALSE)
+life.original <- na.omit(life.original)
+attach(life.original)
+# Filter European countries
+library(dplyr)
+europe <- life.original %>%
+  filter(Region %in% c('European Union', 'Rest of Europe'))
+# Remove "Region", "year" and "Developed" status (perfectly correlated with "Developing" variable)
+europe <- europe %>%
+  select(-c(2,3, 19))
+# Aggregate observations by mean from all years (2000-2015) for each country
+ag.europe <- europe %>%
+  group_by(Country) %>%
+  summarise_all(mean)
+# Make "Country" the name of each observation
+library(tibble)
+eur1 <- ag.europe %>%
+  column_to_rownames("Country")
+# Scale data and store scaling parameters
+eur <- scale(eur1)
+mean_vals <- attr(eur, "scaled:center")
+std_dev_vals <- attr(eur, "scaled:scale")
+```
+
+K-means clustering
+```{r }
+
+# Load packages
+library("cluster")
+library("factoextra")
+library("ggplot2")
+
+# Determine optimal number of clusters
+fviz_nbclust(eur, kmeans, method = "gap_stat") 
+# Number of clusters suggested = 3
+
+# Compute K-means clustering with k=3
+set.seed(1234)
+km.eur <- kmeans(eur,3, nstart = 30) 
+# view total within-cluster sum of squares
+km.eur$tot.withinss
+# Visualize k-means clusters
+fviz_cluster(km.eur, data = eur, palette = "jco",
+             ggtheme = theme_minimal())
+# Check cluster assignments
+km.eur
+
+# De-standardized cluster means
+original_centers <- sweep(km.eur$centers, 2, std_dev_vals, "*")
+original_centers <- sweep(original_centers, 2, mean_vals, "+")
+# View cluster means
+original_centers
+
+```
+
+Hierarchical Clustering
+```{r }
+
+# Plot hierarchical clustering dendrogram (with Euclidean distance metric)
+hc.eur <- hclust(dist(eur),  method = "ward.D2")
+fviz_dend(hc.eur, cex = 0.48, k = 9, palette = "jco")
+# Check clusters
+cutree(hc.eur, k=3)
+
+# Alternative: Plotting dendrogram using base R's plot() function
+plot(hc.eur, las=2, cex=0.5)
+
+# Alternative: Plot dendrogram using correlation-based distance for comparison
+eur.dd <- as.dist(1 - cor(t(eur)))
+plot(hclust(eur.dd, method = "complete"), main = "Complete Linkage with Correlation-Based Distance", xlab="", sub="")
+hc.dd <- hclust(dist(eur.dd),  method = "complete")
+fviz_dend(hc.dd, cex = 0.48, k = 3, palette = "jco")
+
+```
+
+Principal Component Analysis
+```{r }
+
+# Load packages 
+library("factoextra")
+library("FactoMineR")
+
+# Compute PCA
+eur.pca <- PCA(eur1, graph = FALSE)
+
+# Scree plot to visualize eigenvalues
+fviz_eig(eur.pca)
+
+# PCA plot of individual countries
+fviz_pca_ind(eur.pca, repel = TRUE)
+## Note that individuals that are alike are group together 
+
+# PCA graph of variables
+fviz_pca_var(eur.pca)
+
+# PCA biplot of individuals and variables 
+fviz_pca_biplot(eur.pca, repel = TRUE, labelsize = 3)
+
+# Check eigenvalues
+eur.pca$eig
+# Eigenvalues of components 1 and 2 cover about 55% of the variation.
+# 5 principal components cover 79.63%
+
+# Results for Variables
+eur.var <- eur.pca$var
+eur.var$coord          # Coordinates
+eur.var$contrib        # Contributions to the PCs
+eur.var$cos2           # Quality of representation 
+# Results for individuals (countries)
+eur.ind <- eur.pca$ind
+eur.ind$coord          # Coordinates
+eur.ind$contrib        # Contributions to the PCs
+eur.ind$cos2           # Quality of representation 
+
+```
+
+Hierarchical Clustering on Principal Components
+```{r }
+
+# Load packages 
+library("factoextra")
+library("FactoMineR")
+
+# PCA with ncp = 5 (keeps first 5 PCs)
+eur.pca2 <- PCA(eur1, ncp = 5, graph = FALSE)
+# Hierarchical clustering on principal components
+eur.hcpc <- HCPC(eur.pca2, graph = FALSE)
+
+# Visualize the dendrogram
+fviz_dend(eur.hcpc, 
+          cex = 0.48,                    
+          palette = "jco",               
+          labels_track_height = 0.8)
+
+# Visualize the clusters on a factor map
+fviz_cluster(eur.hcpc,
+             repel = TRUE,            
+             show.clust.cent = TRUE,  
+             palette = "jco",        
+             ggtheme = theme_minimal(),
+             main = "Factor map")
+
+# Original data with cluster assignment for each country
+head(eur.hcpc$data.clust, 42)
+
+# Variable profiles that describe each cluster
+eur.hcpc$desc.var$quanti
+
+# Principal dimensions associated with the clusters 
+eur.hcpc$desc.axes$quanti
+
+```
+
+
+3. CLASSIFICATION
+=====================================================
+
+Dataset:  Buscema,M, Terzi,S, and Tastle,W. (2010). Steel Plates Faults. UCI Machine Learning Repository. https://doi.org/10.24432/C5J88N
+Downloaded from: https://www.openml.org/d/1504
+
+Load and prepare 'Steel Plates Faults' dataset from OpenML
+```{r }
+
+# Load data
+library("mlr3oml")
+steel <- read_arff('php9xWOpn.arff')
+attach(steel)
+
+# Prepare data for classification of the variable "Class"
+# "Class" indicates 1=common fault, 2=other/uncommon fault
+# Binary variables V28-V33 indicate type of common fault (Pastry, Z_Scratch, K_Scratch, Stains, Dirtiness, Bumps) therefore they will not be used as predictors in classification of "Class"
+
+# Check correlation matrix of independent variables (V1-V27)
+cor_matrix <- cor(steel[,-c(28:34)])
+# Do not use V13 dummy variable as it's perfectly negatively correlated with dummy variable V12 (each indicates a type of steel - mutually exclusive as there are only 2 types)
+
+# Split data into training and test sets
+library(caret)
+library(dplyr)
+set.seed(123)
+training.samples <- createDataPartition(steel$Class, p = 0.8, list = FALSE)
+train.steel  <- steel[training.samples, ]
+test.steel <- steel[-training.samples, ]
+
+```
+
+Multiple logistic regression of "Class" on 27 predictor variables
+```{r }
+
+# Train MLR model
+mlr.steel <- glm(Class ~ V1+V2+V3+V4+V5+V6+V7+V8+V9+V10+V11+V12+V14+V15+V16+V17+V18+V19+V20+V21+V22+V23+V24+V25+V26+V27, data = train.steel, family = binomial)
+# Summarize model
+summary(mlr.steel)
+
+# Predict the class probabilities from the test set
+mlr.probs <- mlr.steel %>% predict(test.steel, type = "response")
+head(mlr.probs)
+# Assign observations to the class with highest probability score (> 0.5)
+mlr.pred <- ifelse(mlr.probs > 0.5, "2", "1")
+head(mlr.pred)
+
+# Compute accuracy of the multiple logistic regression model
+mean(mlr.pred == test.steel$Class)
+# [1] 0.7183463
+
+# Display confusion matrix
+table(mlr.pred, test.steel$Class)
+
+# Compute sensitivity (% of uncommon faults correctly predicted)
+58/(58+76)
+# [1] 0.4328358
+# Compute specificity (% of common faults correctly predicted)
+220/(220+33)
+# [1] 0.8695652
+
+```
+
+Penalized Logistic Regression (cross validation followed by lasso)
+```{r }
+
+# Load packages
+library("tidyverse")
+library("caret")
+library("glmnet")
+
+# Create a matrix of predictor variables x, and set response variable equal to y
+x <- model.matrix(Class ~ V1+V2+V3+V4+V5+V6+V7+V8+V9+V10+V11+V12+V14+V15+V16+V17+V18+V19+V20+V21+V22+V23+V24+V25+V26+V27, train.steel)
+y <- train.steel$Class
+# Find optimal value of lambda that minimizes the cross-validation error 
+set.seed(123) 
+cv.lasso <- cv.glmnet(x, y, alpha = 1, family = "binomial")
+# View optimal value of lambda
+cv.lasso$lambda.min
+# Plot CV error against log(lambda)
+plot(cv.lasso)
+# Plot shows that the optimal model is given by lambda such that log(lambda) is around -5
+
+# Fit the penalized logistic regression to the training data
+plr.steel <- glmnet(x, y, alpha = 1, family = "binomial",
+                    lambda = cv.lasso$lambda.min)
+# Display regression coefficients
+coef(plr.steel)
+
+# Make predictions on the test data
+x.test <- model.matrix(Class ~ V1+V2+V3+V4+V5+V6+V7+V8+V9+V10+V11+V12+V14+V15+V16+V17+V18+V19+V20+V21+V22+V23+V24+V25+V26+V27, test.steel)
+plr.probs <- plr.steel %>% predict(newx = x.test)
+plr.pred <- ifelse(plr.probs > 0.5, "2", "1")
+
+# Model accuracy
+mean(plr.pred == test.steel$Class)
+# [1] 0.6950904
+
+# Confusion matrix
+table(plr.pred, test.steel$Class)
+# Compute sensitivity
+28/(106+28)
+# [1] 0.2089552
+# Specificity
+241/(241+12)
+# [1] 0.9525692
+
+# Plot ROC Curve
+library(pROC)
+plr.probs.roc <- exp(plr.probs) / (1 + exp(plr.probs))
+roc.plr <- roc(test.steel$Class, plr.probs.roc)
+plot(roc.plr, main="ROC Curve for Penalised Pogistic Regression", lwd=2)
+# Calculate and plot AUC
+auc.plr <- sprintf("AUC = %0.2f", auc(roc.plr))
+legend("bottomright", legend=auc.plr)
+# AUC=0.73
+
+```
+
+Check for Multicolinearity
+```{r }
+
+# Check VIF values
+library(car)
+vif_values <- vif(mlr.steel)
+vif_values <- sort(vif_values, decreasing = TRUE)
+vif_values
+# V4 and V3 have extremely large VIF values
+# 10 out of 27 variables have VIF values >10
+
+# View heatmap of correlation matrix
+library(corrplot)
+library(grDevices)
+colors <- colorRampPalette(c("blue", "white", "red"))(100)
+print(colours)
+heatmap(cor_matrix, symm = TRUE, Rowv = NA, Colv = NA, scale="none", col=colors)
+
+```
+
+Multiple Logistic Regression removing high-VIF variables
+```{r }
+
+# Performing multiple logistic regression again, but iteratively removing one high-VIF predictor variable with non-significant p-value at a time.
+# Highest accuracy found in combination of variables below.
+
+# Train MLR model, removing V1, V4, V5, V8, V22, V26, V27
+mlr.steel3 <- glm(Class ~ V2 + V3 + V6 + V7 + V9 + V10 + V11 + V12 + V14 + V15 + V16 + V17 + V18 + V19 + V20 + V21 + V23 + V24 + V25, data = train.steel, family = binomial)
+# Summarize model
+summary(mlr.steel3)
+
+# Predict the class probabilities from the test set
+mlr.probs3 <- mlr.steel3 %>% predict(test.steel, type = "response")
+head(mlr.probs3)
+# Assign observations to the class with highest probability score (> 0.5)
+mlr.pred3 <- ifelse(mlr.probs3 > 0.5, "2", "1")
+head(mlr.pred3)
+
+# Compute accuracy of the model
+mean(mlr.pred3 == test.steel$Class)
+# [1] 0.7312661
+
+# Display confusion matrix
+table(mlr.pred3, test.steel$Class)
+# Compute sensitivity
+61/(61+73)
+# 0.4552239
+# Compute specificity
+222/(222+31)
+# 0.8774704
+
+```
+
+MLR with interaction terms
+```{r }
+
+# MLR with added interaction terms to address collinearity.
+# Search for correlations with absolute value above 0.8
+abs(cor(steel[,-c(28:34)]))>0.8
+cor(steel[,-c(28:34)])
+
+
+# Highest accuracy found in combination of variables below.
+
+# Multiple logistic regression with interaction terms V3*V4, V5*V8, V6*V7
+mlr.steel2 <- glm( Class ~ V1 + V2 + V3*V4 + V5*V8 + V6*V7 + V9 + V10 + V11 + V12 + V14 + V15 + V16 + V17 + V18 + V19 + V20 + V21 + V22 + V23 + V24 + V25 + V26 + V27, data = train.steel, family = binomial)
+# Summarize model
+summary(mlr.steel2)
+
+# Predict the class probabilities from the test set
+mlr.probs2 <- mlr.steel2 %>% predict(test.steel, type = "response")
+head(mlr.probs2)
+# Assign observations to the class with highest probability score (> 0.5)
+mlr.pred2 <- ifelse(mlr.probs2 > 0.5, "2", "1")
+head(mlr.pred2)
+
+# Compute accuracy of the model
+mean(mlr.pred2 == test.steel$Class)
+# 0.744186
+
+# Display confusion matrix
+table(mlr.pred2, test.steel$Class)
+# Sensitivity
+62/(62+72)
+# 0.4626866
+# Specificity
+226/(226+27)
+# 0.8932806
+
+```
+
+Linear Discriminant Analysis
+```{r }
+
+# Load MASS package 
+library("MASS")
+
+# Normalize the data and estimate preprocessing parameters
+preproc.param <- train.steel %>% 
+  preProcess(method = c("center", "scale"))
+# Transform the data using the estimated parameters
+train.transformed <- preproc.param %>% predict(train.steel)
+test.transformed <- preproc.param %>% predict(test.steel)
+
+# Fit the LDA model
+lda.steel <- lda(Class ~ V1+V2+V3+V4+V5+V6+V7+V8+V9+V10+V11+V12+V14+V15+V16+V17+V18+V19+V20+V21+V22+V23+V24+V25+V26+V27, data = train.transformed)
+
+# Make predictions based on transformed test data
+lda.pred <- lda.steel %>% predict(test.transformed)
+
+# Model accuracy
+mean(lda.pred$class==test.transformed$Class)
+# 0.7131783
+
+# View confusion matrix
+table(lda.pred$class, test.transformed$Class)
+# Sensitivity
+55/(79+55)
+# 0.4104478
+# Specificity
+221/(221+32)
+# 0.8735178
+
+```
+
+Quadratic Discriminant Analysis
+```{r }
+
+# Fit the QDA model
+qda.steel <- qda(Class ~ V1+V2+V3+V4+V5+V6+V7+V8+V9+V10+V11+V12+V14+V15+V16+V17+V18+V19+V20+V21+V22+V23+V24+V25+V26+V27, data = train.transformed)
+
+# Make predictions
+qda.pred <- qda.steel %>% predict(test.transformed)
+
+# Model accuracy
+mean(qda.pred$class == test.transformed$Class)
+# [1] 0.5607235
+
+# Confusion Matrix
+table(qda.pred$class, test.transformed$Class)
+# Sensitivity
+128/(128+6)
+# [1] 0.9552239
+# Specificity
+89/(89+164)
+# [1] 0.3517787
+
+# Plot ROC of QDA model
+library(pROC)
+qda.probs <- predict(qda.steel, test.transformed, type = "posterior")$posterior[,2]
+roc.qda <- roc(test.transformed$Class, qda.probs)
+plot(roc.qda, legacy.axes=TRUE, main="ROC Curve for QDA Model", lwd=2)
+# Plot AUC
+auc <- sprintf("AUC = %0.2f", auc(roc.qda))
+legend("bottomright", legend=auc)
+# AUC=0.79
+
+```
+
+Flexible Discriminant Analysis
+```{r }
+
+# Load package 
+library("mda")
+# Fit the FDA model
+fda.steel <- fda(Class ~ V1+V2+V3+V4+V5+V6+V7+V8+V9+V10+V11+V12+V14+V15+V16+V17+V18+V19+V20+V21+V22+V23+V24+V25+V26+V27, data = train.transformed)
+
+# Make predictions
+fda.pred <- fda.steel %>% predict(test.transformed)
+
+# Model accuracy
+mean(fda.pred == test.transformed$Class)
+# 0.7131783
+
+# Confusion Matrix
+table(fda.pred, test.transformed$Class)
+# sensitivity
+55/(55+79)
+# 0.4104478
+# specificity
+221/(221+32)
+# 0.8735178
+
+```
+
+K-Nearest Neighbours
+```{r }
+
+# Load Package
+library(class)
+
+# Fit KNN model (after some trial and error, k=6 achieved the highest model accuracy)
+set.seed(123)
+knn.pred <- knn(train.steel, test.steel, cl=train.steel$Class, k=6)
+
+# Confusion matrix
+table(knn.pred, test.steel$Class)
+
+# Model Accuracy
+(193+60)/387
+# 0.6537468
+# Sensitivity
+60/(60+74)
+# 0.4477612
+# Specificity
+193/(193+60)
+# 0.7628458
+
+```
+
+K-Nearest Neighbours with Cross Validation
+```{r }
+
+# Load Package
+library(caret)
+
+# set cross validation method
+ctrl <- trainControl(method = "cv", number = 10)
+
+# train KNN model with k=sqrt(no. of training samples = 1554)
+set.seed(123)
+knn.cv <- train(
+  Class ~ .,  
+  data = train.steel,
+  method = "knn",
+  trControl = ctrl,
+  tuneGrid = data.frame(k = 39))
+
+# make predictions
+knn.pred.cv <- predict(knn.cv, newdata = test.steel)
+
+# view correlation matrix
+table(knn.pred.cv, test.steel$Class)
+
+# Model accuracy
+(206+40)/387
+# 0.6356589
+# Sensitivity
+40/(40+94)
+# 0.2985075
+# Specificity
+206/(206+47)
+# 0.8142292
+```
+
+Naive Bayes Classifier
+```{r }
+
+# Load packages
+library("tidyverse")
+library("caret")
+library("mlbench")
+library("klaR")
+
+# Fit the Naive Bayes model
+nb.steel <- NaiveBayes(Class ~ V1+V2+V3+V4+V5+V6+V7+V8+V9+V10+V11+V12+V14+V15+V16+V17+V18+V19+V20+V21+V22+V23+V24+V25+V26+V27, data = train.steel)
+
+# Make predictions
+nb.pred <- nb.steel %>% predict(test.steel)
+
+# Model accuracy
+mean(nb.pred$class == test.steel$Class)
+# 0.496124
+
+# Confusion Matrix
+table(nb.pred$class, test.steel$Class)
+# Sensitivity
+126/(126+8)
+# 0.9402985
+# Specificity
+66/(187+66)
+# 0.2608696
+```
+
+Boosting - part 1
+```{r echo=TRUE, results='hide'}
+
+# Load packages
+library("tidyverse")
+library("caret")
+library("xgboost")
+
+# Fit boosting model on the training set
+set.seed(123)
+boost.steel <- train(Class ~ V1+V2+V3+V4+V5+V6+V7+V8+V9+V10+V11+V12+V14+V15+V16+V17+V18+V19+V20+V21+V22+V23+V24+V25+V26+V27, data = train.steel, method = "xgbTree", trControl = trainControl("cv", number = 10))
+
+```
+
+Boosting - part 2
+```{r }
+
+# Best tuning parameter
+boost.steel$bestTune
+
+# Make predictions on the test data
+boost.pred <- boost.steel %>% predict(test.steel)
+head(boost.pred)
+
+# Compute model prediction accuracy rate
+mean(boost.pred == test.steel$Class)
+# 0.7958656
+
+# Confusion matrix
+table(boost.pred, test.steel$Class)
+# Sensitivity
+91/(91+43)
+# 0.6791045
+# Specificity
+217/(217+36)
+# 0.8577075
+
+# Variable importance
+varImp(boost.steel)
+
+# Plot ROC curve for boosting model
+boost.probs <- predict(boost.steel, newdata = test.steel, type="prob")
+detach(package:caret, unload=TRUE)
+library(pROC)
+roc.boost <- roc(test.steel$Class, boost.probs[, "2"])
+plot(roc.boost, legacy.axes=TRUE, main="ROC Curve for Boosting Model")
+
+# Plot AUC
+s <- sprintf("AUC = %0.2f", auc(roc.boost))
+legend("bottomright", legend=s)
+# AUC=0.85
+
+```
+
